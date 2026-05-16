@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebCraft 3D - Advanced Edition</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', Courier, monospace; user-select: none; }
+        #game-container { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; }
+        
+        /* UI Overlay */
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; display: none; }
+        #crosshair { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: rgba(255,255,255,0.8); font-size: 24px; text-shadow: 1px 1px 0 #000; }
+        
+        /* Stats & Modes */
+        #top-left { position: absolute; top: 20px; left: 20px; color: white; text-shadow: 1px 1px 0 #000; pointer-events: auto;}
+        #game-mode { font-size: 20px; font-weight: bold; margin-bottom: 10px; color: #FFD700; }
+        #health-container { width: 200px; height: 20px; background: rgba(0,0,0,0.5); border: 2px solid #555; }
+        #health-bar { width: 100%; height: 100%; background: #ff3333; transition: width 0.2s; }
+        
+        /* Hotbar */
+        #hotbar { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; gap: 5px; background: rgba(0,0,0,0.5); padding: 5px; border-radius: 5px; overflow-x: hidden; width: 490px;}
+        .slot { width: 50px; height: 50px; border: 2px solid #555; position: relative; flex-shrink: 0;}
+        .slot.active { border-color: #FFF; box-shadow: 0 0 10px #FFF; }
+        .slot span { position: absolute; bottom: 2px; right: 4px; color: white; font-weight: bold; font-size: 12px; text-shadow: 1px 1px 0 #000; }
+        
+        /* Start Screen */
+        #start-screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; z-index: 10; }
+        h1 { font-size: 48px; margin-bottom: 10px; color: #4CAF50; text-shadow: 2px 2px 0 #000; }
+        p { font-size: 16px; line-height: 1.5; text-align: center; max-width: 600px; margin-bottom: 20px; }
+        button { padding: 15px 40px; font-size: 24px; font-weight: bold; background: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; transition: 0.2s; font-family: inherit; margin-bottom: 20px;}
+        button:hover { background: #45a049; transform: scale(1.05); }
+        
+        .upload-container { background: rgba(255,255,255,0.1); padding: 20px; border-radius: 8px; text-align: center; border: 2px dashed #4CAF50;}
+        input[type="file"] { display: none; }
+        .custom-file-upload { display: inline-block; padding: 10px 20px; cursor: pointer; background: #2196F3; color: white; border-radius: 4px; font-weight: bold; transition: 0.2s;}
+        .custom-file-upload:hover { background: #0b7dda; }
+        #upload-status { margin-top: 10px; font-size: 14px; color: #FFD700; }
+    </style>
+</head>
+<body>
+
+<div id="game-container"></div>
+
+<div id="ui-layer">
+    <div id="crosshair">+</div>
+    <div id="top-left">
+        <div id="game-mode">Creative Mode</div>
+        <div id="health-container" style="display: none;"><div id="health-bar"></div></div>
+    </div>
+    <div id="hotbar"></div>
+</div>
+
+<div id="start-screen">
+    <h1>WebCraft 3D</h1>
+    <p>
+        <strong>Controls:</strong><br>
+        [W A S D] Move | [Space] Jump | [Mouse] Look<br>
+        [Left Click] Break / Interact | [Right Click] Place Block<br>
+        [Scroll Wheel] Switch Blocks | [M] Toggle Game Mode<br>
+        <em>Features: Dynamic Water physics, Hierarchical Mobs, Doors, Texture Packs!</em>
+    </p>
+    <button id="start-btn">Click to Play</button>
+    
+    <div class="upload-container">
+        <label for="texture-upload" class="custom-file-upload">
+            Load Texture Pack (.zip)
+        </label>
+        <input id="texture-upload" type="file" accept=".zip" />
+        <div id="upload-status">Default Textures Loaded</div>
+    </div>
+</div>
+
+<!-- Libraries -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+<script>
+// --- CORE SETUP ---
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87CEEB);
+scene.fog = new THREE.Fog(0x87CEEB, 20, 60);
+
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.getElementById('game-container').appendChild(renderer.domElement);
+
+// --- LIGHTING ---
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+scene.add(ambientLight);
+
+const sunLight = new THREE.DirectionalLight(0xffffff, 1);
+sunLight.castShadow = true;
+sunLight.shadow.camera.left = -50; sunLight.shadow.camera.right = 50;
+sunLight.shadow.camera.top = 50; sunLight.shadow.camera.bottom = -50;
+sunLight.shadow.mapSize.width = 2048; sunLight.shadow.mapSize.height = 2048;
+scene.add(sunLight);
+
+// --- DEFAULT TEXTURE GENERATOR ---
+function generatePixelTexture(baseHex, noiseHex, detail = 64) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 16; canvas.height = 16;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = baseHex; ctx.fillRect(0, 0, 16, 16);
+    ctx.fillStyle = noiseHex;
+    for(let i = 0; i < detail; i++) {
+        ctx.fillRect(Math.floor(Math.random()*16), Math.floor(Math.random()*16), 1, 1);
+    }
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.NearestFilter;
+    return tex;
+}
+
+// --- BLOCK REGISTRY ---
+const blockRegistry = [
+    { name: 'Grass', targetFile: 'grass_block_top.png', tex: generatePixelTexture('#41980a', '#307005'), type: 'solid' },
+    { name: 'Dirt', targetFile: 'dirt.png', tex: generatePixelTexture('#5c4033', '#402a20'), type: 'solid' },
+    { name: 'Coarse Dirt', targetFile: 'coarse_dirt.png', tex: generatePixelTexture('#4a332a', '#2e1c15'), type: 'solid' },
+    { name: 'Stone', targetFile: 'stone.png', tex: generatePixelTexture('#888888', '#666666'), type: 'solid' },
+    { name: 'Cobblestone', targetFile: 'cobblestone.png', tex: generatePixelTexture('#666666', '#444444', 120), type: 'solid' },
+    { name: 'Bedrock', targetFile: 'bedrock.png', tex: generatePixelTexture('#333333', '#111111', 150), type: 'solid' },
+    { name: 'Oak Log', targetFile: 'oak_log.png', tex: generatePixelTexture('#5c3a21', '#3b2311', 80), type: 'solid' },
+    { name: 'Oak Leaves', targetFile: 'oak_leaves.png', tex: generatePixelTexture('#228b22', '#145c14', 100), type: 'transparent' },
+    { name: 'Glass', targetFile: 'glass.png', tex: generatePixelTexture('#aaddff', '#ffffff', 10), type: 'transparent' },
+    { name: 'Sand', targetFile: 'sand.png', tex: generatePixelTexture('#d2b48c', '#c2a47c', 100), type: 'solid' },
+    { name: 'Gravel', targetFile: 'gravel.png', tex: generatePixelTexture('#808080', '#999999', 150), type: 'solid' },
+    { name: 'Bricks', targetFile: 'bricks.png', tex: generatePixelTexture('#b22222', '#8b0000', 40), type: 'solid' },
+    { name: 'Obsidian', targetFile: 'obsidian.png', tex: generatePixelTexture('#1a1025', '#2a1a3a', 80), type: 'solid' },
+    { name: 'Diamond Ore', targetFile: 'diamond_ore.png', tex: generatePixelTexture('#888888', '#00ffff', 20), type: 'solid' },
+    { name: 'Door Bottom', targetFile: 'oak_door_bottom.png', tex: generatePixelTexture('#a0522d', '#70351a'), type: 'door' },
+    { name: 'Door Top', targetFile: 'oak_door_top.png', tex: generatePixelTexture('#a0522d', '#70351a'), type: 'door' },
+    { name: 'Water', targetFile: 'water_still.png', tex: generatePixelTexture('#2255ff', '#3366ff', 30), type: 'fluid' }
+];
+
+// Instanced Meshes Setup
+const MAX_BLOCKS = 80000;
+const instancedMeshes = {};
+const worldMap = new Map();
+
+const stdGeo = new THREE.BoxGeometry(1, 1, 1);
+const doorGeo = new THREE.BoxGeometry(1, 1, 0.15);
+doorGeo.translate(0, 0, 0.425);
+
+blockRegistry.forEach((block, id) => {
+    let matConf = { map: block.tex, roughness: 0.9 };
+    if(block.type === 'transparent') {
+        matConf.transparent = true;
+        matConf.alphaTest = 0.5;
+    } else if(block.type === 'fluid') {
+        matConf.transparent = true;
+        matConf.opacity = 0.8;
+    }
+    const mat = new THREE.MeshStandardMaterial(matConf);
+    const geo = block.type === 'door' ? doorGeo : stdGeo;
+    const mesh = new THREE.InstancedMesh(geo, mat, MAX_BLOCKS);
+    mesh.count = 0;
+    if(block.type !== 'transparent' && block.type !== 'fluid') {
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+    }
+    scene.add(mesh);
+    instancedMeshes[id] = mesh;
+});
+
+// --- PLAYER & HAND INITIALIZATION ---
+const handGroup = new THREE.Group();
+const handGeo = new THREE.BoxGeometry(0.25, 0.25, 0.25);
+const handMat = new THREE.MeshStandardMaterial({ map: blockRegistry[0].tex, roughness: 0.8 });
+const handMesh = new THREE.Mesh(handGeo, handMat);
+handMesh.position.set(0, 0, -0.2); 
+handGroup.position.set(0.4, -0.3, -0.5);
+handGroup.add(handMesh);
+camera.add(handGroup);
+scene.add(camera);
+
+let handAnim = 0;
+function animateHand() { handAnim = 1; }
+
+// --- UI HOTBAR SETUP ---
+let currentBlockType = 0;
+const hotbar = document.getElementById('hotbar');
+
+function renderHotbar() {
+    hotbar.innerHTML = '';
+    const placeableBlocks = blockRegistry.filter(b => b.name !== 'Door Top');
+    
+    placeableBlocks.forEach((t, i) => {
+        const slot = document.createElement('div');
+        slot.className = `slot ${i === currentBlockType ? 'active' : ''}`;
+        slot.id = `slot-${i}`;
+        
+        const previewCanvas = document.createElement('canvas');
+        previewCanvas.width = 50; previewCanvas.height = 50;
+        const ctx = previewCanvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(t.tex.image, 0,0, 50,50);
+        
+        slot.appendChild(previewCanvas);
+        slot.innerHTML += `<span>${t.name}</span>`;
+        hotbar.appendChild(slot);
+    });
+    
+    const activeSlot = document.getElementById(`slot-${currentBlockType}`);
+    if(activeSlot) {
+        hotbar.scrollLeft = activeSlot.offsetLeft - (hotbar.offsetWidth/2) + 25;
+    }
+    if (handMat) {
+        handMat.map = blockRegistry[currentBlockType].tex;
+    }
+}
+renderHotbar();
+
+document.addEventListener('wheel', (e) => {
+    if(document.pointerLockElement !== document.body) return;
+    const placeableCount = blockRegistry.filter(b => b.name !== 'Door Top').length;
+    if(e.deltaY > 0) currentBlockType = (currentBlockType + 1) % placeableCount;
+    else currentBlockType = (currentBlockType - 1 + placeableCount) % placeableCount;
+    renderHotbar();
+});
+
+// --- ZIP TEXTURE LOADER ---
+document.getElementById('texture-upload').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if(!file) return;
+    document.getElementById('upload-status').innerText = "Unzipping and Parsing...";
+    
+    try {
+        const zip = await JSZip.loadAsync(file);
+        const texLoader = new THREE.TextureLoader();
+        let loadedCount = 0;
+
+        for (const [id, block] of blockRegistry.entries()) {
+            const zipFileKey = Object.keys(zip.files).find(k => k.endsWith(block.targetFile));
+            if(zipFileKey) {
+                const blob = await zip.files[zipFileKey].async("blob");
+                const url = URL.createObjectURL(blob);
+                
+                texLoader.load(url, (texture) => {
+                    texture.magFilter = THREE.NearestFilter;
+                    texture.minFilter = THREE.NearestFilter;
+                    instancedMeshes[id].material.map = texture;
+                    instancedMeshes[id].material.needsUpdate = true;
+                    block.tex = texture;
+                    if(id === currentBlockType) renderHotbar();
+                });
+                loadedCount++;
+            }
+        }
+        document.getElementById('upload-status').innerText = `Success! Loaded ${loadedCount} textures.`;
+        setTimeout(() => renderHotbar(), 500);
+    } catch (err) {
+        document.getElementById('upload-status').innerText = "Error loading zip.";
+        console.error(err);
+    }
+});
+
+// --- CORE ENGINE / BLOCK OPERATIONS ---
+const tempMatrix = new THREE.Matrix4();
+const tempPos = new THREE.Vector3();
+const tempRot = new THREE.Quaternion();
+const tempScale = new THREE.Vector3(1,1,1);
+
+function addBlock(x, y, z, id, meta = {}) {
+    const key = `${x},${y},${z}`;
+    if(worldMap.has(key)) return false;
+    const im = instancedMeshes[id];
+    if(im.count >= MAX_BLOCKS) return false;
+    
+    tempPos.set(x, y, z);
+    tempRot.identity();
+    
+    if(blockRegistry[id].type === 'door') {
+        let angle = 0;
+        if(meta.facing === 'N') angle = Math.PI;
+        if(meta.facing === 'E') angle = Math.PI/2;
+        if(meta.facing === 'W') angle = -Math.PI/2;
+        if(meta.open) angle += Math.PI/2;
+        tempRot.setFromAxisAngle(new THREE.Vector3(0,1,0), angle);
+    }
+
+    tempMatrix.compose(tempPos, tempRot, tempScale);
+    im.setMatrixAt(im.count, tempMatrix);
+    im.instanceMatrix.needsUpdate = true;
+    
+    worldMap.set(key, { id: id, index: im.count, meta: meta });
+    im.count++;
+    
+    if(blockRegistry[id].type === 'fluid') activeFluids.push(key);
+    return true;
+}
+
+function removeBlock(x, y, z) {
+    const key = `${x},${y},${z}`;
+    if(!worldMap.has(key)) return;
+    const blockData = worldMap.get(key);
+    if(blockRegistry[blockData.id].name === 'Bedrock' && gameMode !== 'creative') return;
+    if(blockRegistry[blockData.id].type === 'door') {
+        const pairY = blockData.meta.isTop ? y - 1 : y + 1;
+        const pairKey = `${x},${pairY},${z}`;
+        if(worldMap.has(pairKey)) deleteInstance(pairKey);
+    }
+    deleteInstance(key);
+    triggerFluidUpdate(x, y, z);
+}
+
+function deleteInstance(key) {
+    const blockData = worldMap.get(key);
+    const im = instancedMeshes[blockData.id];
+    const lastIndex = im.count - 1;
+    
+    if(blockData.index !== lastIndex) {
+        im.getMatrixAt(lastIndex, tempMatrix);
+        im.setMatrixAt(blockData.index, tempMatrix);
+        for (let [k, v] of worldMap.entries()) {
+            if (v.id === blockData.id && v.index === lastIndex) {
+                v.index = blockData.index;
+                break;
+            }
+        }
+    }
+    im.count--;
+    im.instanceMatrix.needsUpdate = true;
+    worldMap.delete(key);
+}
+
+function interactBlock(x, y, z) {
+    const key = `${x},${y},${z}`;
+    if(!worldMap.has(key)) return;
+    const blockData = worldMap.get(key);
+    if(blockRegistry[blockData.id].type === 'door') {
+        blockData.meta.open = !blockData.meta.open;
+        updateInstanceMatrix(x, y, z, blockData);
+        const pairY = blockData.meta.isTop ? y - 1 : y + 1;
+        const pairKey = `${x},${pairY},${z}`;
+        if(worldMap.has(pairKey)) {
+            const pairData = worldMap.get(pairKey);
+            pairData.meta.open = blockData.meta.open;
+            updateInstanceMatrix(x, pairY, z, pairData);
+        }
+    }
+}
+
+function updateInstanceMatrix(x, y, z, blockData) {
+    const im = instancedMeshes[blockData.id];
+    tempPos.set(x, y, z);
+    tempRot.identity();
+    if(blockRegistry[blockData.id].type === 'door') {
+        let angle = 0;
+        if(blockData.meta.facing === 'N') angle = Math.PI;
+        if(blockData.meta.facing === 'E') angle = Math.PI/2;
+        if(blockData.meta.facing === 'W') angle = -Math.PI/2;
+        if(blockData.meta.open) angle -= Math.PI/2;
+        tempRot.setFromAxisAngle(new THREE.Vector3(0,1,0), angle);
+    }
+    tempMatrix.compose(tempPos, tempRot, tempScale);
+    im.setMatrixAt(blockData.index, tempMatrix);
+    im.instanceMatrix.needsUpdate = true;
+}
+
+// --- FLUID DYNAMICS ---
+const activeFluids = [];
+let lastFluidTick = 0;
+
+function tickFluids() {
+    if(activeFluids.length === 0) return;
+    const batch = activeFluids.splice(0, 50); 
+    const newFluids = [];
+    batch.forEach(key => {
+        if(!worldMap.has(key)) return;
+        const data = worldMap.get(key);
+        if(blockRegistry[data.id].type !== 'fluid') return;
+        const [x, y, z] = key.split(',').map(Number);
+        const level = data.meta.level !== undefined ? data.meta.level : 7;
+        const downKey = `${x},${y-1},${z}`;
+        if(!worldMap.has(downKey) && y > -10) {
+            if(addBlock(x, y-1, z, data.id, { level: 7 })) newFluids.push(downKey);
+            newFluids.push(key);
+            return; 
+        } else if(level > 0) {
+            const dirs = [[1,0], [-1,0], [0,1], [0,-1]];
+            let spread = false;
+            dirs.forEach(([dx, dz]) => {
+                const sKey = `${x+dx},${y},${z+dz}`;
+                if(!worldMap.has(sKey)) {
+                    if(addBlock(x+dx, y, z+dz, data.id, { level: level - 1 })) {
+                        newFluids.push(sKey);
+                        spread = true;
+                    }
+                }
+            });
+            if(spread) newFluids.push(key);
+        }
+    });
+    activeFluids.push(...newFluids);
+}
+
+function triggerFluidUpdate(x, y, z) {
+    const dirs = [[0,1,0], [0,-1,0], [1,0,0], [-1,0,0], [0,0,1], [0,0,-1]];
+    dirs.forEach(([dx, dy, dz]) => {
+        const k = `${x+dx},${y+dy},${z+dz}`;
+        if(worldMap.has(k) && blockRegistry[worldMap.get(k).id].type === 'fluid') {
+            if(!activeFluids.includes(k)) activeFluids.push(k);
+        }
+    });
+}
+
+// --- WORLD GENERATION ---
+const noise = {
+    seed: Math.random() * 100,
+    get(x, y) {
+        let n = Math.sin(x * 12.9898 + y * 78.233 + this.seed) * 43758.5453123;
+        return n - Math.floor(n);
+    },
+    smooth(x, y) {
+        const ix = Math.floor(x), iy = Math.floor(y);
+        const fx = x - ix, fy = y - iy;
+        const v1 = this.get(ix, iy), v2 = this.get(ix+1, iy);
+        const v3 = this.get(ix, iy+1), v4 = this.get(ix+1, iy+1);
+        const i1 = v1*(1-fx) + v2*fx;
+        const i2 = v3*(1-fx) + v4*fx;
+        return i1*(1-fy) + i2*fy;
+    }
+};
+
+function fbm(x, z) { return noise.smooth(x*0.04, z*0.04) * 12 + noise.smooth(x*0.1, z*0.1) * 4; }
+
+function generateWorld() {
+    for(let x = -32; x <= 32; x++) {
+        for(let z = -32; z <= 32; z++) {
+            let h = Math.floor(fbm(x, z));
+            addBlock(x, -5, z, 5); 
+            for(let y = h; y > -5; y--) {
+                let type = 3;
+                if(y === h) {
+                    if(h > 8) type = 4;
+                    else if (h < 0) type = 9;
+                    else type = 0;
+                } else if (y >= h - 2) {
+                    type = 1;
+                } else if (Math.random() < 0.02) {
+                    type = 13;
+                }
+                addBlock(x, y, z, type);
+            }
+            if(h < 0) {
+                for(let wy = h+1; wy <= 0; wy++) addBlock(x, wy, z, 16); 
+            }
+            if(h >= 0 && h <= 8 && Math.random() < 0.02) {
+                for(let ty = 1; ty <= 4; ty++) addBlock(x, h+ty, z, 6);
+                for(let tx = x-2; tx <= x+2; tx++) {
+                    for(let ty = h+3; ty <= h+5; ty++) {
+                        for(let tz = z-2; tz <= z+2; tz++) {
+                            if(Math.abs(tx-x)===2 && Math.abs(tz-z)===2) continue;
+                            if(tx===x && tz===z && ty<h+5) continue; 
+                            addBlock(tx, ty, tz, 7);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+generateWorld();
+
+// --- MOBS ---
+const mobs = [];
+
+function createZombie(x, y, z) {
+    const group = new THREE.Group();
+    const skinMat = new THREE.MeshLambertMaterial({ color: 0x44aa44 });
+    const shirtMat = new THREE.MeshLambertMaterial({ color: 0x00aaaa });
+    const pantsMat = new THREE.MeshLambertMaterial({ color: 0x4444bb });
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), skinMat);
+    head.position.set(0, 1.25, 0);
+    group.add(head);
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.75, 0.25), shirtMat);
+    body.position.set(0, 0.625, 0);
+    group.add(body);
+    const armGeo = new THREE.BoxGeometry(0.25, 0.75, 0.25);
+    armGeo.translate(0, -0.25, 0);
+    const armL = new THREE.Mesh(armGeo, skinMat);
+    armL.position.set(-0.375, 1.0, 0);
+    armL.rotation.x = Math.PI/2;
+    group.add(armL);
+    const armR = new THREE.Mesh(armGeo, skinMat);
+    armR.position.set(0.375, 1.0, 0);
+    armR.rotation.x = Math.PI/2;
+    group.add(armR);
+    const legGeo = new THREE.BoxGeometry(0.25, 0.75, 0.25);
+    legGeo.translate(0, -0.375, 0);
+    const legL = new THREE.Mesh(legGeo, pantsMat);
+    legL.position.set(-0.125, 0.75, 0);
+    group.add(legL);
+    const legR = new THREE.Mesh(legGeo, pantsMat);
+    legR.position.set(0.125, 0.75, 0);
+    group.add(legR);
+    group.position.set(x, y, z);
+    scene.add(group);
+    mobs.push({ mesh: group, parts: { legL, legR, armL, armR, head }, vel: new THREE.Vector3(), type: 'zombie', nextThink: 0 });
+}
+
+function createPig(x, y, z) {
+    const group = new THREE.Group();
+    const pigMat = new THREE.MeshLambertMaterial({ color: 0xffaaaa });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.5, 1.0), pigMat);
+    body.position.set(0, 0.5, 0);
+    group.add(body);
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), pigMat);
+    head.position.set(0, 0.7, 0.6);
+    group.add(head);
+    const legGeo = new THREE.BoxGeometry(0.25, 0.4, 0.25);
+    legGeo.translate(0, -0.2, 0);
+    const legs = [];
+    [ [-0.2, 0.4, 0.3], [0.2, 0.4, 0.3], [-0.2, 0.4, -0.3], [0.2, 0.4, -0.3] ].forEach(pos => {
+        let leg = new THREE.Mesh(legGeo, pigMat);
+        leg.position.set(...pos);
+        group.add(leg);
+        legs.push(leg);
+    });
+    group.position.set(x, y, z);
+    scene.add(group);
+    mobs.push({ mesh: group, parts: { legs, head }, vel: new THREE.Vector3(), type: 'pig', nextThink: 0 });
+}
+
+createZombie(5, 10, 5);
+createPig(-5, 10, -5);
+
+// --- PLAYER CONTROLS ---
+const player = { pos: new THREE.Vector3(0, 20, 0), vel: new THREE.Vector3(), width: 0.6, height: 1.6, health: 100, maxHealth: 100 };
+let gameMode = 'creative';
+let isFlying = false, isGrounded = false, lastSpacePress = 0;
+const keys = {};
+
+document.addEventListener('keydown', e => { 
+    keys[e.code] = true;
+    if(e.code >= 'Digit1' && e.code <= 'Digit9') {
+        currentBlockType = parseInt(e.code.replace('Digit', '')) - 1;
+        renderHotbar();
+    }
+    if(e.code === 'KeyM') toggleGameMode();
+    if(e.code === 'Space') {
+        let now = Date.now();
+        if(gameMode === 'creative' && now - lastSpacePress < 300) isFlying = !isFlying;
+        lastSpacePress = now;
+    }
+});
+document.addEventListener('keyup', e => keys[e.code] = false);
+
+let pitch = 0, yaw = 0;
+document.addEventListener('mousemove', e => {
+    if (document.pointerLockElement === document.body) {
+        yaw -= e.movementX * 0.002;
+        pitch -= e.movementY * 0.002;
+        pitch = Math.max(-Math.PI/2 + 0.01, Math.min(Math.PI/2 - 0.01, pitch));
+        camera.quaternion.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
+    }
+});
+
+document.getElementById('start-btn').addEventListener('click', () => {
+    document.body.requestPointerLock();
+    document.getElementById('start-screen').style.display = 'none';
+    document.getElementById('ui-layer').style.display = 'block';
+});
+document.addEventListener('pointerlockchange', () => {
+    if(document.pointerLockElement !== document.body) {
+        document.getElementById('start-screen').style.display = 'flex';
+        document.getElementById('ui-layer').style.display = 'none';
+    }
+});
+
+const raycaster = new THREE.Raycaster();
+const centerVector = new THREE.Vector2(0, 0);
+const wireframeBox = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(1.02, 1.02, 1.02)), 
+    new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 2 })
+);
+wireframeBox.visible = false;
+scene.add(wireframeBox);
+
+document.addEventListener('mousedown', e => {
+    if(document.pointerLockElement !== document.body) return;
+    raycaster.setFromCamera(centerVector, camera);
+    const intersects = raycaster.intersectObjects(Object.values(instancedMeshes));
+    if(intersects.length > 0) {
+        let hit = intersects[0];
+        hit.object.getMatrixAt(hit.instanceId, tempMatrix);
+        let pos = new THREE.Vector3().setFromMatrixPosition(tempMatrix);
+        let targetId = null;
+        for(let [k, v] of worldMap.entries()) {
+            if(k === `${Math.round(pos.x)},${Math.round(pos.y)},${Math.round(pos.z)}`) targetId = v.id;
+        }
+        if(e.button === 0) {
+            if(targetId !== null && blockRegistry[targetId].type === 'door') interactBlock(Math.round(pos.x), Math.round(pos.y), Math.round(pos.z));
+            else removeBlock(Math.round(pos.x), Math.round(pos.y), Math.round(pos.z));
+            animateHand();
+        } 
+        else if (e.button === 2) {
+            if(targetId !== null && blockRegistry[targetId].type === 'door') {
+                interactBlock(Math.round(pos.x), Math.round(pos.y), Math.round(pos.z));
+                animateHand();
+                return;
+            }
+            let p = pos.clone().add(hit.face.normal);
+            let bDef = blockRegistry[currentBlockType];
+            const pBounds = { minX: player.pos.x - player.width/2, maxX: player.pos.x + player.width/2,
+                              minY: player.pos.y, maxY: player.pos.y + player.height,
+                              minZ: player.pos.z - player.width/2, maxZ: player.pos.z + player.width/2 };
+            const bBounds = { minX: p.x - 0.5, maxX: p.x + 0.5, minY: p.y - 0.5, maxY: p.y + 0.5, minZ: p.z - 0.5, maxZ: p.z + 0.5 };
+            const intersect = (pBounds.minX < bBounds.maxX && pBounds.maxX > bBounds.minX) &&
+                              (pBounds.minY < bBounds.maxY && pBounds.maxY > bBounds.minY) &&
+                              (pBounds.minZ < bBounds.maxZ && pBounds.maxZ > bBounds.minZ);
+            if(!intersect) {
+                let facing = 'S';
+                let deg = THREE.MathUtils.radToDeg(yaw) % 360;
+                if(deg < 0) deg += 360;
+                if(deg >= 45 && deg < 135) facing = 'W';
+                else if(deg >= 135 && deg < 225) facing = 'N';
+                else if(deg >= 225 && deg < 315) facing = 'E';
+                if(bDef.type === 'door') {
+                    addBlock(Math.round(p.x), Math.round(p.y), Math.round(p.z), 14, { isTop: false, open: false, facing });
+                    addBlock(Math.round(p.x), Math.round(p.y) + 1, Math.round(p.z), 15, { isTop: true, open: false, facing });
+                } else {
+                    addBlock(Math.round(p.x), Math.round(p.y), Math.round(p.z), currentBlockType);
+                }
+                animateHand();
+            }
+        }
+    }
+});
+
+function checkCollision(pos, width, height) {
+    const minX = Math.floor(pos.x - width/2), maxX = Math.floor(pos.x + width/2);
+    const minY = Math.floor(pos.y), maxY = Math.floor(pos.y + height);
+    const minZ = Math.floor(pos.z - width/2), maxZ = Math.floor(pos.z + width/2);
+    for(let x = minX; x <= maxX; x++) {
+        for(let y = minY; y <= maxY; y++) {
+            for(let z = minZ; z <= maxZ; z++) {
+                const k = `${x},${y},${z}`;
+                if(worldMap.has(k) && blockRegistry[worldMap.get(k).id].type !== 'fluid') return true;
+            }
+        }
+    }
+    return false;
+}
+
+const clock = new THREE.Clock();
+let gameTime = 0;
+
+function toggleGameMode() {
+    gameMode = gameMode === 'creative' ? 'survival' : 'creative';
+    document.getElementById('game-mode').innerText = gameMode === 'creative' ? 'Creative Mode' : 'Survival Mode';
+    document.getElementById('health-container').style.display = gameMode === 'survival' ? 'block' : 'none';
+    if(gameMode === 'survival') {
+        isFlying = false;
+        player.health = player.maxHealth;
+        updateHealthUI();
+    }
+}
+
+function updateHealthUI() {
+    const bar = document.getElementById('health-bar');
+    bar.style.width = (player.health / player.maxHealth * 100) + '%';
+    if(player.health <= 0) {
+        player.pos.set(0, 30, 0); 
+        player.health = player.maxHealth;
+        toggleGameMode();
+    }
+}
+
+function updateDayNight(delta) {
+    gameTime += delta * 0.1; 
+    const sunY = Math.sin(gameTime);
+    sunLight.position.set(Math.cos(gameTime)*100, sunY*100, Math.sin(gameTime)*50);
+    let skyCol = new THREE.Color();
+    if(sunY > 0.2) { skyCol.setHex(0x87CEEB); sunLight.intensity = 1; } 
+    else if(sunY > -0.2) {
+        let f = (sunY + 0.2) / 0.4;
+        skyCol.copy(new THREE.Color(0xFF8C00)).lerp(new THREE.Color(0x87CEEB), f);
+        sunLight.intensity = f;
+    } else { skyCol.setHex(0x000011); sunLight.intensity = 0; }
+    scene.background = skyCol;
+    scene.fog.color = skyCol;
+    ambientLight.intensity = Math.max(0.1, sunY * 0.5 + 0.4);
+    if(instancedMeshes[16].material.map) instancedMeshes[16].material.map.offset.y -= delta * 0.2;
+}
+
+function updatePlayer(delta) {
+    const moveDir = new THREE.Vector3();
+    if(keys['KeyW']) moveDir.z -= 1;
+    if(keys['KeyS']) moveDir.z += 1;
+    if(keys['KeyA']) moveDir.x -= 1;
+    if(keys['KeyD']) moveDir.x += 1;
+    moveDir.normalize().applyAxisAngle(new THREE.Vector3(0,1,0), yaw);
+    const isMoving = moveDir.lengthSq() > 0;
+    const speed = isFlying ? 15 : 5;
+    player.vel.x = moveDir.x * speed;
+    player.vel.z = moveDir.z * speed;
+    if(!isFlying) {
+        player.vel.y -= 25 * delta; 
+        if(keys['Space'] && isGrounded) player.vel.y = 9;
+    } else {
+        player.vel.y = 0;
+        if(keys['Space']) player.pos.y += speed * delta;
+        if(keys['ShiftLeft']) player.pos.y -= speed * delta;
+    }
+    player.pos.x += player.vel.x * delta;
+    if(!isFlying && checkCollision(player.pos, player.width, player.height)) player.pos.x -= player.vel.x * delta;
+    player.pos.z += player.vel.z * delta;
+    if(!isFlying && checkCollision(player.pos, player.width, player.height)) player.pos.z -= player.vel.z * delta;
+    player.pos.y += player.vel.y * delta;
+    if(!isFlying && checkCollision(player.pos, player.width, player.height)) {
+        player.pos.y -= player.vel.y * delta;
+        if(player.vel.y < 0) isGrounded = true;
+        player.vel.y = 0;
+    } else isGrounded = false;
+    if(player.pos.y < -15) player.health = 0;
+    let bob = (isMoving && isGrounded && !isFlying) ? Math.sin(Date.now() * 0.015) * 0.05 : 0;
+    camera.position.set(player.pos.x, player.pos.y + 1.5 + bob, player.pos.z);
+    if(handAnim > 0) {
+        handAnim -= delta * 5;
+        handGroup.rotation.x = -Math.PI/4 - Math.sin(handAnim * Math.PI) * 0.5;
+    } else {
+        handGroup.rotation.x = 0;
+        handGroup.position.y = -0.3 + (isMoving && isGrounded ? Math.sin(Date.now()*0.01)*0.02 : 0);
+    }
+    raycaster.setFromCamera(centerVector, camera);
+    const intersects = raycaster.intersectObjects(Object.values(instancedMeshes));
+    if(intersects.length > 0) {
+        wireframeBox.visible = true;
+        intersects[0].object.getMatrixAt(intersects[0].instanceId, tempMatrix);
+        let p = new THREE.Vector3().setFromMatrixPosition(tempMatrix);
+        let idTarget = worldMap.get(`${Math.round(p.x)},${Math.round(p.y)},${Math.round(p.z)}`)?.id;
+        if(idTarget !== undefined && blockRegistry[idTarget].type === 'door') {
+            wireframeBox.scale.set(1.02, 1.02, 0.2);
+            wireframeBox.rotation.setFromRotationMatrix(tempMatrix);
+            let offset = new THREE.Vector3(0, 0, 0.425).applyMatrix4(new THREE.Matrix4().extractRotation(tempMatrix));
+            wireframeBox.position.copy(p).add(offset);
+        } else {
+            wireframeBox.scale.set(1.02, 1.02, 1.02);
+            wireframeBox.rotation.set(0,0,0);
+            wireframeBox.position.copy(p);
+        }
+    } else wireframeBox.visible = false;
+}
+
+function updateMobs(delta) {
+    mobs.forEach(mob => {
+        if(Date.now() > mob.nextThink) {
+            mob.nextThink = Date.now() + 500 + Math.random() * 1000;
+            if(gameMode === 'survival' && mob.type === 'zombie' && mob.mesh.position.distanceTo(player.pos) < 16) {
+                let dir = player.pos.clone().sub(mob.mesh.position);
+                dir.y = 0; dir.normalize();
+                mob.vel.x = dir.x * 2.5; mob.vel.z = dir.z * 2.5;
+                mob.mesh.lookAt(player.pos.x, mob.mesh.position.y, player.pos.z);
+            } else {
+                if(Math.random() > 0.3) {
+                    let angle = Math.random() * Math.PI * 2;
+                    let speed = mob.type === 'pig' ? 1.5 : 1;
+                    mob.vel.x = Math.cos(angle) * speed; mob.vel.z = Math.sin(angle) * speed;
+                    mob.mesh.rotation.y = -angle;
+                } else { mob.vel.x = 0; mob.vel.z = 0; }
+            }
+        }
+        mob.vel.y -= 25 * delta;
+        mob.mesh.position.x += mob.vel.x * delta;
+        if(checkCollision(mob.mesh.position, 0.8, 1.2)) mob.mesh.position.x -= mob.vel.x * delta;
+        mob.mesh.position.z += mob.vel.z * delta;
+        if(checkCollision(mob.mesh.position, 0.8, 1.2)) mob.mesh.position.z -= mob.vel.z * delta;
+        mob.mesh.position.y += mob.vel.y * delta;
+        if(checkCollision(mob.mesh.position, 0.8, 1.2)) {
+            mob.mesh.position.y -= mob.vel.y * delta;
+            mob.vel.y = 0;
+            if(Math.abs(mob.vel.x) > 0 || Math.abs(mob.vel.z) > 0) mob.vel.y = 7;
+        }
+        let speedMag = Math.sqrt(mob.vel.x*mob.vel.x + mob.vel.z*mob.vel.z);
+        let swing = speedMag > 0.1 ? Math.sin(Date.now() * 0.01) * 0.8 : 0;
+        if(mob.type === 'zombie') {
+            mob.parts.legL.rotation.x = swing; mob.parts.legR.rotation.x = -swing;
+            mob.parts.armL.rotation.x = Math.PI/2 + swing * 0.2; mob.parts.armR.rotation.x = Math.PI/2 - swing * 0.2;
+        } else if (mob.type === 'pig') {
+            mob.parts.legs[0].rotation.x = swing; mob.parts.legs[1].rotation.x = -swing;
+            mob.parts.legs[2].rotation.x = -swing; mob.parts.legs[3].rotation.x = swing;
+        }
+        if(gameMode === 'survival' && mob.type === 'zombie' && mob.mesh.position.distanceTo(player.pos) < 1.5) {
+            player.health -= 15 * delta;
+            updateHealthUI();
+        }
+    });
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+    const delta = Math.min(clock.getDelta(), 0.1); 
+    updateDayNight(delta);
+    if(Date.now() - lastFluidTick > 200) { tickFluids(); lastFluidTick = Date.now(); }
+    if(document.pointerLockElement === document.body) { updatePlayer(delta); updateMobs(delta); }
+    renderer.render(scene, camera);
+}
+
+player.pos.y = fbm(0, 0) + 10;
+animate();
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+document.addEventListener('contextmenu', e => e.preventDefault());
+</script>
+</body>
+</html>
